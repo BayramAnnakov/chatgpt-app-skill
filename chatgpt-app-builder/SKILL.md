@@ -269,6 +269,34 @@ npm install
 npm run build  # Compiles server + bundles widget
 ```
 
+### Step 5: Implementation Checklist
+
+Before moving to testing, verify:
+
+#### Widget Requirements
+- [ ] Uses Apps SDK UI design tokens (see [apps_sdk_ui_tokens.md](references/apps_sdk_ui_tokens.md))
+- [ ] Implements dark mode with CSS variable architecture
+- [ ] Uses LoadingDots pattern for loading states (see [widget_ui_patterns.md](references/widget_ui_patterns.md))
+- [ ] Calls `notifyIntrinsicHeight()` after all DOM changes
+- [ ] Includes copy button feedback for copyable content
+- [ ] Has show more/less for long lists (>3 items)
+- [ ] Works on mobile (test at 375px width)
+
+#### Security Requirements
+- [ ] All user input is validated (see [security_patterns.md](references/security_patterns.md))
+- [ ] HTML output uses safe DOM methods (textContent, createElement)
+- [ ] External image URLs are proxied with domain whitelist
+- [ ] Rate limiting is implemented per session
+
+#### Server Requirements
+- [ ] `/.well-known/openai-apps-challenge` endpoint returns challenge token
+- [ ] `/privacy` endpoint returns HTML privacy policy
+- [ ] `/terms` endpoint returns HTML terms of service
+- [ ] `/mcp` endpoint handles SSE connections
+- [ ] `/health` or `/` returns health check JSON
+- [ ] CORS configured for ChatGPT domains only
+- [ ] Security headers set on all responses
+
 **Output**: Complete project in working directory
 
 ---

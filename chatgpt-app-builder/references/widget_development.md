@@ -450,31 +450,105 @@ function ExternalLink({ href, children }: { href: string; children: React.ReactN
 ## Styling for ChatGPT Context
 
 ### Dark Mode Support
+
+Use the Apps SDK UI gray scale for native ChatGPT look. See [Apps SDK UI Tokens](./apps_sdk_ui_tokens.md) for complete reference.
+
+#### CSS Variable Architecture
+
+Define semantic colors that adapt to theme:
+
 ```css
-/* Base styles */
-.widget-container {
-  background: var(--bg-primary, #ffffff);
-  color: var(--text-primary, #1a1a1a);
+:root {
+  /* Gray scale (Apps SDK UI) */
+  --gray-0: #ffffff;
+  --gray-100: #f5f5f5;
+  --gray-200: #e5e5e5;
+  --gray-400: #a3a3a3;
+  --gray-500: #737373;
+  --gray-700: #404040;
+  --gray-800: #262626;
+  --gray-900: #171717;
+  --gray-1000: #0a0a0a;
+
+  /* Semantic colors (light mode defaults) */
+  --color-text: var(--gray-1000);
+  --color-text-secondary: var(--gray-500);
+  --color-text-tertiary: var(--gray-400);
+  --color-bg: var(--gray-0);
+  --color-bg-soft: var(--gray-100);
+  --color-border: var(--gray-200);
 }
 
-/* Dark mode */
+/* Dark mode overrides - only change semantic colors */
 .dark-mode {
-  --bg-primary: #1a1a1a;
-  --bg-secondary: #2d2d2d;
-  --text-primary: #ffffff;
-  --text-secondary: #a0a0a0;
-  --border-color: #404040;
+  --color-text: var(--gray-0);
+  --color-text-secondary: var(--gray-400);
+  --color-text-tertiary: var(--gray-500);
+  --color-bg: var(--gray-900);
+  --color-bg-soft: var(--gray-800);
+  --color-border: var(--gray-700);
 }
 
-/* Light mode */
-.light-mode {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f5f5f5;
-  --text-primary: #1a1a1a;
-  --text-secondary: #666666;
-  --border-color: #e0e0e0;
+/* Components use semantic colors - no dark mode overrides needed */
+.card {
+  background: var(--color-bg-soft);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
 }
 ```
+
+#### Theme Detection
+
+```javascript
+function updateTheme() {
+  const theme = window.openai?.theme || 'light';
+  document.body.classList.toggle('dark-mode', theme === 'dark');
+}
+
+// Initial setup
+updateTheme();
+
+// Listen for theme changes from ChatGPT
+window.addEventListener('openai:set_globals', updateTheme);
+```
+
+#### React Hook
+
+```typescript
+function useTheme(): 'light' | 'dark' {
+  const [theme, setTheme] = useState<'light' | 'dark'>(
+    () => (window as any).openai?.theme || 'light'
+  );
+
+  useEffect(() => {
+    const handler = () => {
+      setTheme((window as any).openai?.theme || 'light');
+    };
+    window.addEventListener('openai:set_globals', handler);
+    return () => window.removeEventListener('openai:set_globals', handler);
+  }, []);
+
+  return theme;
+}
+
+// Usage
+function App() {
+  const theme = useTheme();
+
+  useEffect(() => {
+    document.body.classList.toggle('dark-mode', theme === 'dark');
+  }, [theme]);
+
+  return <div className="widget">...</div>;
+}
+```
+
+#### Key Principle
+
+Only override semantic color variables (not gray scale values) in dark mode. This ensures:
+- Consistent colors across all components
+- Single place to manage theme
+- No component-specific dark mode overrides needed
 
 ### Responsive Layout
 ```css

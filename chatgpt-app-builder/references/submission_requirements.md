@@ -19,6 +19,84 @@ Complete checklist and requirements for submitting to the ChatGPT App Store.
 ### Data Residency
 - [ ] Using global data residency project (EU residency not supported for apps)
 
+### Required Endpoints
+Your server must implement these endpoints:
+
+#### 1. Domain Verification Challenge
+```
+Path: /.well-known/openai-apps-challenge
+Method: GET
+Response: Plain text challenge token (provided by OpenAI)
+Content-Type: text/plain
+```
+
+Example implementation:
+```typescript
+if (url.pathname === '/.well-known/openai-apps-challenge') {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('YOUR_CHALLENGE_TOKEN_HERE');
+  return;
+}
+```
+
+#### 2. Privacy Policy Page
+```
+Path: /privacy
+Method: GET
+Response: HTML page with privacy policy
+Content-Type: text/html
+```
+
+Required sections:
+- Information collected and how it's used
+- Data storage and retention practices
+- Third-party services used
+- Data sharing policies
+- User rights
+- Contact information
+
+#### 3. Terms of Service Page
+```
+Path: /terms
+Method: GET
+Response: HTML page with terms of service
+Content-Type: text/html
+```
+
+Required sections:
+- Service description
+- Acceptable use policy
+- Data and privacy (link to privacy policy)
+- Intellectual property
+- Disclaimers and limitation of liability
+- Rate limits and usage restrictions
+- Modifications and termination
+- Governing law
+- Contact information
+
+#### 4. MCP Endpoint
+```
+Path: /mcp (or your configured path)
+Method: GET (SSE connection), POST (messages)
+Response: Server-Sent Events stream
+```
+
+#### 5. Health Check
+```
+Path: / or /health
+Method: GET
+Response: JSON with status
+```
+
+Example:
+```typescript
+if (url.pathname === '/' || url.pathname === '/health') {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ status: 'ok', name: 'your-app-name' }));
+  return;
+}
+```
+
 ---
 
 ## Tool Requirements
