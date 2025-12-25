@@ -521,14 +521,19 @@ Understanding when OAuth happens helps with debugging and architecture decisions
 - **Server restarts** lose in-memory tokens, but ChatGPT still sends its cached copy
 - **Token must be verified** on every request (ChatGPT sends it, you verify it)
 
-### Production Considerations
+### Production Considerations: Token Storage
+
+**Critical**: In-memory token storage fails in production because server restarts lose all tokens.
 
 ```typescript
 // ❌ In-memory token storage - tokens lost on restart
 const accessTokens = new Map<string, TokenData>();
 
 // ✅ Persistent storage - tokens survive restarts
-// Use Redis, database, or other persistent store
+```
+
+**Option 1: Redis (recommended for high traffic)**
+```typescript
 import Redis from "ioredis";
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -539,6 +544,47 @@ async function storeToken(token: string, data: TokenData) {
 async function getToken(token: string): Promise<TokenData | null> {
   const data = await redis.get(`token:${token}`);
   return data ? JSON.parse(data) : null;
+}
+```
+
+**Option 2: Database (e.g., Supabase/PostgreSQL)**
+```typescript
+import { createClient } from "@supabase/supabase-js";
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+async function storeToken(token: string, userId: string, data: TokenData) {
+  await supabase.from("oauth_tokens").upsert({
+    token_hash: hashToken(token),  // Never store tokens in plain text
+    user_id: userId,
+    expires_at: new Date(Date.now() + 3600 * 1000),
+    ...data,
+  });
+}
+```
+
+**Hybrid approach (LRU cache + database)**
+```typescript
+// Fast lookups with LRU cache, persistent storage for reliability
+const tokenCache = new Map<string, TokenData>();
+const MAX_CACHE_SIZE = 10000;
+
+async function getToken(token: string): Promise<TokenData | null> {
+  // Check cache first
+  if (tokenCache.has(token)) {
+    return tokenCache.get(token)!;
+  }
+
+  // Fall back to database
+  const data = await loadFromDatabase(token);
+  if (data) {
+    // LRU eviction if at capacity
+    if (tokenCache.size >= MAX_CACHE_SIZE) {
+      const oldestKey = tokenCache.keys().next().value;
+      tokenCache.delete(oldestKey);
+    }
+    tokenCache.set(token, data);
+  }
+  return data;
 }
 ```
 

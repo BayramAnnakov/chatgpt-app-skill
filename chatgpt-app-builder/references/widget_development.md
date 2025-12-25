@@ -700,3 +700,140 @@ View all available components and their props:
 6. **Handle loading states** - Show feedback during tool calls
 7. **Validate CSP** - Ensure all external domains are in widgetCSP
 8. **Consider using @openai/apps-sdk-ui** - Pre-built components save time
+
+---
+
+## Common Widget Gotchas
+
+### SVG Animation: CSS vs Attributes
+
+CSS styles **override** SVG presentation attributes. This causes subtle bugs with dynamic SVG animations.
+
+**Problem:** Setting SVG attributes doesn't work when CSS is present:
+
+```javascript
+// ❌ WRONG - CSS styles override this!
+progressFill.setAttribute('stroke-dashoffset', offset);
+```
+
+**Solution:** Use `.style` property to modify CSS directly:
+
+```javascript
+// ✅ CORRECT - Modifies computed style, triggers CSS transition
+progressFill.style.strokeDashoffset = offset;
+```
+
+**Why:** When both an SVG attribute and CSS rule target the same property, CSS wins. `setAttribute()` changes the attribute, but the CSS rule still takes precedence.
+
+### SVG Progress Ring: Clockwise from Top
+
+To make a circular progress ring fill clockwise from 12 o'clock:
+
+```html
+<svg viewBox="0 0 100 100" class="circular-progress">
+  <circle class="progress-bg" cx="50" cy="50" r="45" pathLength="100"/>
+  <circle class="progress-fill" cx="50" cy="50" r="45" pathLength="100"/>
+</svg>
+```
+
+```css
+.circular-progress {
+  transform: rotate(-90deg);  /* Start from 12 o'clock instead of 3 o'clock */
+}
+
+.progress-fill {
+  fill: none;
+  stroke: var(--accent-color);
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 100;      /* With pathLength=100, this is the full circle */
+  stroke-dashoffset: 75;      /* 100 - 25 = showing 25% */
+  transition: stroke-dashoffset 0.4s ease-out;
+}
+```
+
+**Key trick:** `pathLength="100"` on the SVG circle makes dasharray/dashoffset math simple:
+- `stroke-dashoffset: 100` = 0% filled
+- `stroke-dashoffset: 0` = 100% filled
+- `stroke-dashoffset: 100 - percent` = percent% filled
+
+### Dark Mode: Gray Scale Inversion
+
+> **⚠️ This catches everyone the first time.**
+
+The Apps SDK UI gray scale **inverts** in dark mode:
+
+| Variable | Light Mode | Dark Mode |
+|----------|------------|-----------|
+| `--gray-100` | Light (#f5f5f5) | **Dark** (#1a1a1a) |
+| `--gray-900` | Dark (#171717) | **Light** (#ededed) |
+
+**Problem:** If you use `--gray-100` thinking it's "light gray," it becomes dark gray in dark mode - potentially invisible on a dark background.
+
+**Solution:** Use the **same variable** for both modes - it auto-inverts:
+
+```css
+/* ✅ CORRECT - Works in both modes automatically */
+.progress-fill {
+  stroke: var(--gray-900);  /* Dark in light mode, light in dark mode */
+}
+
+/* ❌ WRONG - Don't create mode-specific overrides for gray values */
+.dark-mode .progress-fill {
+  stroke: var(--gray-100);  /* Don't do this! */
+}
+```
+
+**Mental model:** Think of gray scale as "contrast level" not "lightness":
+- `--gray-900` = high contrast (visible against background)
+- `--gray-100` = low contrast (subtle, background-ish)
+
+The gray scale maintains this semantic meaning in both modes.
+
+### Loading State Re-initialization Bug
+
+**Problem:** Loading animation resets every time the widget re-renders during loading phase.
+
+**Cause:** Calling initialization function on every render:
+
+```javascript
+// ❌ WRONG - Reinitializes on every render
+function render() {
+  if (viewType === 'loading') {
+    initLoadingAnimation();  // Called repeatedly!
+  }
+}
+```
+
+**Solution:** Guard against re-initialization:
+
+```javascript
+let loadingInitialized = false;
+
+function initLoadingAnimation() {
+  // Guard: don't reinitialize if already running
+  if (loadingInitialized) return;
+  loadingInitialized = true;
+
+  // Set up timers, intervals, etc.
+}
+
+// Reset when loading completes
+function onDataReceived() {
+  loadingInitialized = false;
+}
+```
+
+Or with React:
+
+```typescript
+const [isLoading, setIsLoading] = useState(true);
+const loadingRef = useRef(false);
+
+useEffect(() => {
+  if (isLoading && !loadingRef.current) {
+    loadingRef.current = true;
+    // Initialize loading animation once
+  }
+}, [isLoading]);
+```

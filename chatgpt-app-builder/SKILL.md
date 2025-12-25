@@ -281,12 +281,14 @@ Before moving to testing, verify:
 - [ ] Includes copy button feedback for copyable content
 - [ ] Has show more/less for long lists (>3 items)
 - [ ] Works on mobile (test at 375px width)
+- [ ] Loading UI guards against re-initialization (see [widget_loading_patterns.md](references/widget_loading_patterns.md))
+- [ ] SVG animations use `.style` property, not `setAttribute()` (see [widget_development.md](references/widget_development.md#common-widget-gotchas))
 
 #### Security Requirements
 - [ ] All user input is validated (see [security_patterns.md](references/security_patterns.md))
 - [ ] HTML output uses safe DOM methods (textContent, createElement)
-- [ ] External image URLs are proxied with domain whitelist
-- [ ] Rate limiting is implemented per session
+- [ ] External image URLs are proxied with domain whitelist and size limits (200KB)
+- [ ] Rate limiting is implemented per session with LRU eviction
 
 #### Server Requirements
 - [ ] `/.well-known/openai-apps-challenge` endpoint returns challenge token
@@ -296,6 +298,14 @@ Before moving to testing, verify:
 - [ ] `/health` or `/` returns health check JSON
 - [ ] CORS configured for ChatGPT domains only
 - [ ] Security headers set on all responses
+- [ ] **Session routing uses direct lookup by sessionId** (CRITICAL - see [troubleshooting.md](references/troubleshooting.md#critical-multi-connection-session-routing))
+- [ ] Response size under 300KB total (remove duplicates, limit images)
+
+#### Production Readiness (if deploying to production)
+- [ ] OAuth tokens stored in database, not in-memory (see [oauth_integration.md](references/oauth_integration.md#production-considerations-token-storage))
+- [ ] Mutation tools include idempotency checks (see [chatgpt_app_best_practices.md](references/chatgpt_app_best_practices.md#idempotency-keys))
+- [ ] Disambiguation pattern for multi-match scenarios (see [chatgpt_app_best_practices.md](references/chatgpt_app_best_practices.md#disambiguation-pattern))
+- [ ] Confirmation receipts for all mutations (see [chatgpt_app_best_practices.md](references/chatgpt_app_best_practices.md#confirmation-receipts))
 
 **Output**: Complete project in working directory
 

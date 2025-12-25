@@ -6,6 +6,51 @@ Based on [official troubleshooting guide](https://developers.openai.com/apps-sdk
 
 ---
 
+## Critical: Multi-Connection Session Routing
+
+> **⚠️ This is the #1 cause of "tool works but widget shows nothing" bugs.**
+
+ChatGPT opens **multiple SSE connections** for the same tool call (speculative execution, retries, widget resource loading). If POST messages are routed to the wrong session, responses are **silently lost**.
+
+**Symptoms:**
+- Widget shows `hasToolOutput: false` despite server logs showing successful response
+- SSE connection closes unexpectedly after tool completes
+- Intermittent failures (works sometimes, fails other times)
+- Server logs show correct response generated but widget times out
+
+**Root Cause:** Iterating through all sessions and handling with whichever "works":
+
+```typescript
+// ❌ WRONG - Do NOT do this
+for (const [, transport] of transports) {
+  try {
+    await transport.handlePostMessage(req, res, body);
+    return;
+  } catch { continue; }
+}
+```
+
+**Correct Pattern:** Route to the specific session by `sessionId` query parameter:
+
+```typescript
+// ✅ CORRECT - Direct session lookup
+const sessionId = url.searchParams.get("sessionId");
+const session = sessions.get(sessionId);
+
+if (session) {
+  await session.transport.handlePostMessage(req, res, body);
+} else {
+  res.writeHead(404).end("Unknown session");
+}
+```
+
+**Why This Matters:**
+- ChatGPT tracks which SSE connection should receive which response
+- Wrong session = response goes to connection ChatGPT isn't monitoring
+- The response is generated and sent, but ChatGPT never sees it
+
+---
+
 ## Server-Side Issues
 
 ### SSE Session Management Issues
@@ -36,31 +81,49 @@ Based on [official troubleshooting guide](https://developers.openai.com/apps-sdk
 **Correct Pattern**:
 
 ```typescript
-// Use SAME path for GET and POST, differentiate by method
+// Session storage
+const sessions = new Map<string, { server: Server; transport: SSEServerTransport }>();
+
+// GET /mcp - SSE connection
 if (url.pathname === "/mcp" && req.method === "GET") {
+  const server = createMcpServer();
   const transport = new SSEServerTransport("/mcp", res);
-  transports.set(sessionId, transport);
+
+  // Store session AFTER transport is created (sessionId is available immediately)
+  sessions.set(transport.sessionId, { server, transport });
+
+  // Clean up on disconnect
+  res.on("close", () => sessions.delete(transport.sessionId));
+
   await server.connect(transport);
 }
 
+// POST /mcp - Message handling
 if (url.pathname === "/mcp" && req.method === "POST") {
-  let body = "";
-  for await (const chunk of req) body += chunk;
+  // Get sessionId from query parameter (ChatGPT sends this)
+  const sessionId = url.searchParams.get("sessionId");
 
-  // Let SSEServerTransport handle session validation internally
-  for (const [, transport] of transports) {
-    try {
-      await transport.handlePostMessage(req, res, body);
-      return;
-    } catch { continue; }
+  if (!sessionId) {
+    res.writeHead(400).end("Missing sessionId");
+    return;
+  }
+
+  // Direct lookup - DO NOT iterate through all sessions!
+  const session = sessions.get(sessionId);
+
+  if (session) {
+    await session.transport.handlePostMessage(req, res);
+  } else {
+    res.writeHead(404).end("Unknown session");
   }
 }
 ```
 
 **Key Points**:
-- Pass the same path to SSEServerTransport constructor as where you handle POSTs
-- Don't validate sessions manually - SSEServerTransport does this internally
-- Use `handlePostMessage(req, res, body)` with the collected body string
+- Route POSTs to the **specific session** matching the `sessionId` query parameter
+- **NEVER iterate through sessions** - this causes the multi-connection bug
+- Store sessions by their transport's `sessionId` property
+- Clean up sessions on SSE disconnect to prevent memory leaks
 
 ---
 
@@ -651,6 +714,112 @@ if (sessionId) {
 2. Don't request full chat history/transcripts
 3. Use coarse location instead of precise GPS
 4. Only request data necessary for the task
+
+---
+
+## Response Size Issues
+
+### Large Responses Fail to Deliver
+
+**Symptoms**: Tool completes successfully (server logs show response), but widget shows timeout or empty state. Works for small responses, fails for large ones.
+
+**Root Cause**: Responses over ~300KB may fail to deliver completely over SSE, or hit ChatGPT's internal limits.
+
+**Solutions**:
+
+1. **Remove duplicate data**:
+   ```typescript
+   // ❌ WRONG - Duplicates data in response
+   return {
+     structuredContent: { items: items.slice(0, 10) },
+     _meta: {
+       fullItems: items,           // Duplicates structuredContent!
+       experience: person.experience,
+       education: person.education,
+     },
+   };
+
+   // ✅ CORRECT - No duplication
+   return {
+     structuredContent: { items: items.slice(0, 10) },
+     _meta: {
+       viewType: "items",
+       hasMore: items.length > 10,
+     },
+   };
+   ```
+
+2. **Limit image sizes**:
+   ```typescript
+   // Convert images to data URLs with size limit
+   async function imageToDataUrl(url: string, maxSizeKb = 200): Promise<string | null> {
+     const response = await fetch(url);
+     const buffer = await response.arrayBuffer();
+
+     if (buffer.byteLength / 1024 > maxSizeKb) {
+       console.log(`Image too large: ${buffer.byteLength / 1024}KB > ${maxSizeKb}KB`);
+       return null;  // Skip oversized images
+     }
+
+     const base64 = Buffer.from(buffer).toString('base64');
+     const contentType = response.headers.get('content-type') || 'image/jpeg';
+     return `data:${contentType};base64,${base64}`;
+   }
+   ```
+
+3. **Log response sizes**:
+   ```typescript
+   const response = { content, structuredContent, _meta };
+   const size = JSON.stringify(response).length;
+   console.log(`Response size: ${(size / 1024).toFixed(1)}KB`);
+
+   if (size > 300 * 1024) {
+     console.warn('Response exceeds 300KB - may fail to deliver');
+   }
+
+   return response;
+   ```
+
+4. **Paginate large datasets**:
+   ```typescript
+   return {
+     structuredContent: {
+       items: items.slice(0, 20),
+       pagination: {
+         total: items.length,
+         hasMore: items.length > 20,
+         cursor: items[19]?.id,
+       },
+     },
+   };
+   ```
+
+---
+
+### Widget Diagnostic Logging
+
+When widgets timeout or show empty state, add diagnostic logging:
+
+```javascript
+// Log when timeout occurs
+function onTimeout() {
+  console.log('Widget timeout diagnostic:', {
+    hasToolOutput: !!window.openai?.toolOutput,
+    toolOutputKeys: Object.keys(window.openai?.toolOutput || {}),
+    hasToolResponseMetadata: !!window.openai?.toolResponseMetadata,
+    viewType: window.openai?.toolResponseMetadata?.viewType,
+    hasToolInput: !!window.openai?.toolInput,
+    toolInputKeys: Object.keys(window.openai?.toolInput || {}),
+    theme: window.openai?.theme,
+    displayMode: window.openai?.displayMode,
+  });
+}
+```
+
+**What to look for**:
+- `hasToolOutput: false` + server logs show success = **session routing bug** (see Critical section)
+- `hasToolOutput: true` but wrong keys = **response structure mismatch**
+- `viewType: undefined` = **missing `_meta.viewType`** in response
 
 ---
 

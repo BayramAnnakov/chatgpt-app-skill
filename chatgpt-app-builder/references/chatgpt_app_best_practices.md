@@ -270,3 +270,207 @@ const GetTasksSchema = z.object({
 5. **Actionable errors** - Tell users what went wrong and how to fix it
 6. **Minimal input** - Only request what's needed for the task
 7. **Consistent output** - Same structure across similar tools
+
+---
+
+## Advanced Patterns
+
+### Idempotency Keys
+
+ChatGPT may retry tool calls. Prevent duplicate operations by accepting an idempotency key:
+
+```typescript
+const CreateItemSchema = z.object({
+  title: z.string(),
+  description: z.string().optional(),
+  idempotencyKey: z.string().optional()
+    .describe("Client-generated UUID to prevent duplicate creation on retries"),
+}).strict();
+
+async function handleCreateItem(args: CreateItemInput) {
+  // Check for existing operation with same key
+  if (args.idempotencyKey) {
+    const existing = await findByIdempotencyKey(args.idempotencyKey);
+    if (existing) {
+      // Return existing result - idempotent!
+      return {
+        content: [{ type: "text", text: `Item already created: ${existing.title}` }],
+        structuredContent: existing,
+      };
+    }
+  }
+
+  // Create new item
+  const item = await createItem({
+    ...args,
+    idempotencyKey: args.idempotencyKey,
+  });
+
+  return {
+    content: [{ type: "text", text: `Created item: ${item.title}` }],
+    structuredContent: item,
+  };
+}
+```
+
+**When to use**: Any mutation tool (create, update, delete, send).
+
+---
+
+### Disambiguation Pattern
+
+When user input could match multiple items, return options for selection:
+
+```typescript
+async function handleUpdateItem(args: { name: string; status: string }) {
+  // Search for matching items
+  const matches = await findItemsByName(args.name);
+
+  // No matches
+  if (matches.length === 0) {
+    return {
+      content: [{ type: "text", text: `No items found matching "${args.name}"` }],
+      structuredContent: { error: true, type: "not_found" },
+    };
+  }
+
+  // Single match - proceed with update
+  if (matches.length === 1) {
+    const updated = await updateItem(matches[0].id, { status: args.status });
+    return {
+      content: [{ type: "text", text: `Updated "${updated.title}" to ${args.status}` }],
+      structuredContent: updated,
+    };
+  }
+
+  // Multiple matches - ask for clarification
+  return {
+    content: [{
+      type: "text",
+      text: `Found ${matches.length} items matching "${args.name}". Which one did you mean?`
+    }],
+    structuredContent: {
+      disambiguation: true,
+      matches: matches.map(item => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,  // Include distinguishing details
+        createdAt: item.createdAt,
+      })),
+      originalQuery: args.name,
+    },
+  };
+}
+```
+
+**Key principles**:
+- Include unique identifiers in disambiguation list
+- Add distinguishing details (dates, descriptions, IDs)
+- Store original query for context
+- Widget can show selection UI for user to pick
+
+---
+
+### Confirmation Receipts
+
+After mutations, echo back exactly what changed to build user trust:
+
+```typescript
+async function handleMoveItem(args: { id: string; toStatus: string }) {
+  const item = await getItem(args.id);
+  const fromStatus = item.status;
+
+  await updateItem(args.id, { status: args.toStatus });
+
+  // Confirmation receipt with before/after
+  const receipt = `Moved "${item.title}" from ${fromStatus} to ${args.toStatus}`;
+
+  return {
+    content: [{ type: "text", text: receipt }],
+    structuredContent: {
+      receipt: true,
+      action: "move",
+      item: {
+        id: item.id,
+        title: item.title,
+      },
+      changes: {
+        status: {
+          from: fromStatus,
+          to: args.toStatus,
+        },
+      },
+    },
+  };
+}
+```
+
+**Receipt patterns**:
+- `"Created [item] with [key details]"`
+- `"Moved [item] from [X] to [Y]"`
+- `"Updated [item]: [field] changed from [old] to [new]"`
+- `"Deleted [item] (was [status])"`
+
+**Why receipts matter**:
+- Users trust the system more when they see confirmation
+- Helps catch mistakes ("Wait, I didn't want to delete that!")
+- Enables undo patterns ("Undo the last change")
+
+---
+
+### Undo Pattern
+
+Support undoing recent changes by tracking operations:
+
+```typescript
+// Store recent operations in activity log
+interface Activity {
+  id: string;
+  action: "create" | "update" | "delete";
+  itemId: string;
+  previousState: Record<string, unknown>;
+  newState: Record<string, unknown>;
+  timestamp: Date;
+  isUndone: boolean;
+}
+
+async function handleUndo(args: { itemName?: string }) {
+  // Find recent undoable activity
+  const activity = await findRecentActivity({
+    itemName: args.itemName,
+    isUndone: false,
+    limit: 1,
+  });
+
+  if (!activity) {
+    return {
+      content: [{ type: "text", text: "Nothing to undo" }],
+      structuredContent: { error: true, type: "nothing_to_undo" },
+    };
+  }
+
+  // Restore previous state
+  await updateItem(activity.itemId, activity.previousState);
+
+  // Mark as undone
+  await markActivityUndone(activity.id);
+
+  return {
+    content: [{
+      type: "text",
+      text: `Undone: Restored "${activity.previousState.title}" to previous state`
+    }],
+    structuredContent: {
+      undone: true,
+      activity: activity.id,
+      restored: activity.previousState,
+    },
+  };
+}
+```
+
+**Best practices**:
+- Store previous state before every mutation
+- Limit undo window (e.g., last 10 operations, last 24 hours)
+- Mark activities as undone to prevent double-undo
+- Include item name in undo confirmation
